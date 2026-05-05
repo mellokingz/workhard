@@ -1,0 +1,297 @@
+// Nexus Study — Prisma Schema
+// PostgreSQL database model
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── USERS ──────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String
+  name          String
+  avatarUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Gamification
+  streakCount   Int      @default(0)
+  lastStudiedAt DateTime?
+  totalXp       Int      @default(0)
+  level         Int      @default(1)
+
+  // Settings
+  prefersDarkMode Boolean @default(true)
+  dailyGoalCards  Int     @default(20)
+  notificationsOn Boolean @default(true)
+
+  // Relations
+  notes         Note[]
+  flashcardSets FlashcardSet[]
+  quizAttempts  QuizAttempt[]
+  sessions      Session[]
+  studySessions StudySession[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userAgent String?
+  ipAddress String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+// ─── NOTES ──────────────────────────────────────────────────────────────────
+
+model Note {
+  id          String     @id @default(uuid())
+  userId      String
+  title       String
+  content     String     @db.Text
+  sourceType  SourceType @default(TEXT)
+  fileName    String?
+  fileSize    Int?
+  subject     String?
+  tags        String[]   @default([])
+  color       String     @default("purple")
+  isArchived  Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // AI processing state
+  aiStatus    AiStatus   @default(PENDING)
+  aiError     String?
+  processedAt DateTime?
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flashcardSet FlashcardSet?
+  quiz         Quiz?
+  summary      Summary?
+
+  @@index([userId])
+  @@index([userId, isArchived])
+  @@map("notes")
+}
+
+enum SourceType {
+  TEXT
+  PDF
+  MARKDOWN
+  URL
+}
+
+enum AiStatus {
+  PENDING
+  PROCESSING
+  COMPLETE
+  FAILED
+}
+
+// ─── FLASHCARDS ─────────────────────────────────────────────────────────────
+
+model FlashcardSet {
+  id        String   @id @default(uuid())
+  noteId    String   @unique
+  userId    String
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  note       Note       @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flashcards Flashcard[]
+
+  @@index([userId])
+  @@map("flashcard_sets")
+}
+
+model Flashcard {
+  id           String        @id @default(uuid())
+  setId        String
+  front        String        @db.Text
+  back         String        @db.Text
+  hint         String?
+  position     Int           @default(0)
+  createdAt    DateTime      @default(now())
+
+  // Spaced repetition (SM-2 algorithm)
+  easeFactor   Float         @default(2.5)
+  interval     Int           @default(1)  // days until next review
+  repetitions  Int           @default(0)
+  nextReviewAt DateTime      @default(now())
+  lastRating   CardRating?
+
+  // Mastery tracking
+  masteryLevel MasteryLevel  @default(BEGINNER)
+  totalReviews Int           @default(0)
+  correctCount Int           @default(0)
+
+  set          FlashcardSet  @relation(fields: [setId], references: [id], onDelete: Cascade)
+  reviews      CardReview[]
+
+  @@index([setId])
+  @@index([nextReviewAt])
+  @@map("flashcards")
+}
+
+model CardReview {
+  id          String     @id @default(uuid())
+  flashcardId String
+  rating      CardRating
+  reviewedAt  DateTime   @default(now())
+  timeSpentMs Int?
+
+  flashcard   Flashcard  @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  @@index([flashcardId])
+  @@map("card_reviews")
+}
+
+enum CardRating {
+  HARD
+  OK
+  EASY
+}
+
+enum MasteryLevel {
+  BEGINNER
+  LEARNING
+  INTERMEDIATE
+  ADVANCED
+  MASTERED
+}
+
+// ─── QUIZZES ─────────────────────────────────────────────────────────────────
+
+model Quiz {
+  id        String     @id @default(uuid())
+  noteId    String     @unique
+  userId    String
+  title     String
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  note      Note         @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  questions QuizQuestion[]
+  attempts  QuizAttempt[]
+
+  @@index([userId])
+  @@map("quizzes")
+}
+
+model QuizQuestion {
+  id          String       @id @default(uuid())
+  quizId      String
+  type        QuestionType @default(MULTIPLE_CHOICE)
+  question    String       @db.Text
+  options     Json         // string[]
+  correct     Int          // index for MC, or string for short answer
+  explanation String?      @db.Text
+  position    Int          @default(0)
+  difficulty  Difficulty   @default(MEDIUM)
+
+  quiz        Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  answers     QuizAnswer[]
+
+  @@index([quizId])
+  @@map("quiz_questions")
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  SHORT_ANSWER
+  TRUE_FALSE
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model QuizAttempt {
+  id          String   @id @default(uuid())
+  quizId      String
+  userId      String
+  score       Float    // 0-100 percentage
+  totalQ      Int
+  correctQ    Int
+  timeTakenMs Int?
+  completedAt DateTime @default(now())
+
+  quiz        Quiz       @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers     QuizAnswer[]
+
+  @@index([userId])
+  @@index([quizId])
+  @@map("quiz_attempts")
+}
+
+model QuizAnswer {
+  id          String   @id @default(uuid())
+  attemptId   String
+  questionId  String
+  answer      String   // index as string for MC
+  isCorrect   Boolean
+  timeSpentMs Int?
+
+  attempt     QuizAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question    QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@map("quiz_answers")
+}
+
+// ─── SUMMARIES ───────────────────────────────────────────────────────────────
+
+model Summary {
+  id             String   @id @default(uuid())
+  noteId         String   @unique
+  overview       String   @db.Text
+  keyPoints      Json     // string[]
+  importantTerms Json     // string[]
+  studyTip       String?  @db.Text
+  tldr           String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  note           Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@map("summaries")
+}
+
+// ─── STUDY SESSIONS ──────────────────────────────────────────────────────────
+
+model StudySession {
+  id          String   @id @default(uuid())
+  userId      String
+  noteId      String?
+  type        String   // "flashcards" | "quiz" | "focus"
+  durationMs  Int
+  cardsReviewed Int    @default(0)
+  startedAt   DateTime @default(now())
+  endedAt     DateTime?
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("study_sessions")
+}
